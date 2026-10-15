@@ -1,4 +1,4 @@
-# db-migration-lab — M0
+# db-migration-lab — lab environment (see README.md)
 # Simulates: old Azure server (source) -> migration VM (tools) -> new Azure server (target)
 # LAB ONLY: passwords are hard-coded on purpose. Never do this for real servers.
 
@@ -61,8 +61,7 @@ services:
       PGPASSWORD: postgres        # so pg_dump / psql don't prompt for a password
     volumes:
       - dumps:/dumps              # where pg_dump writes its directory-format output in M1
-      - ./scripts:/scripts:ro     # our M1 scripts, read-only (avoids PowerShell quoting problems)
-      - ./sql:/sql:ro             # our SQL files, so the tools container can run them against source OR target
+      - ./:/lab:ro                # the whole repo, read-only: scripts run as /lab/<folder>/<file> (avoids PowerShell quoting problems)
       - ./archive:/archive        # M3: archived months land in the archive folder on your PC (stands in for Azure Blob Storage)
     depends_on:
       source:

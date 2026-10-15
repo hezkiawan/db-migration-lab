@@ -1,4 +1,8 @@
-# M1 — Migration experiments: results log
+# Lab results log (M1 – M3)
+
+> Script names below are as they were run. In the current repo layout they live in `experiments/` (M1), `migration/` (M2), `retention/` (M3), `tools/` and `lab-setup/` — see the README.
+
+# M1 — Migration experiments
 
 Lab: Docker on one laptop (Windows, 4 cores / 8 threads, 16 GB RAM).
 Source & target: PostgreSQL 16 (same major as production). Tools: pgcopydb image (pg_dump/pg_restore 16, pgcopydb 0.18.8).
@@ -41,12 +45,29 @@ Does NOT transfer (must be planned for Azure):
 
 ---
 
-# M2 — Partitioning log_activity (in progress)
+# M2 — Partitioning log_activity during migration (Option C)
 
-Every step: script in `scripts/` or `sql/`, terminal output saved with `| Tee-Object -FilePath results\<step>.log`, one row below, screenshots in `results/screenshots/`.
+Every step: script in `migration/`, terminal output saved with `| Tee-Object -FilePath results\<step>.log`, one row below, screenshots in `results/screenshots/`.
 
 | Step | Date | What | Time | Verified | Key observation |
 |---|---|---|---|---|---|
+| M2.1 | 13-Oct-26 | Small tables: `pg_dump -Fd -j4 -T log_activity` → `pg_restore -C -j4` | 15 s | 3 tables on target, no log_activity ✅ | `-T` leaves log_activity out completely |
+| M2.2 | 13-Oct-26 | Create partitioned `log_activity` on target (24 months + 2 future + DEFAULT), UTC bounds | <1 s | `\d+` shows `Partition key: RANGE (created_at)` ✅ | PG16: no IDENTITY on partitioned tables (added in PG17) → sequence default |
+| M2.3 | 13-Oct-26 | Month-by-month COPY stream source → target; cut during 2025-03, then re-run | try 1: 4 months × 13 s, cut at 741,273 / 1,250,000 rows of 2025-03 → `INCOMPLETE`, stopped. try 2: **437 s** | — | Re-run **skipped 4 finished months**, redid only 2025-03. Per-month time grew 13 s → ~30 s over the run (machine I/O, not investigated). Total copy ≈ 8.5 min vs Run B log_activity copy 3m53s → **≈2× slower than pgcopydb's single stream** (sequential months + per-month counts) |
+| M2.4 | 13-Oct-26 | PK (id, created_at) + created_at index + setval + ANALYZE | PK 40 s, index 63 s, ANALYZE 84 s | sequence = 30,000,000 ✅ | Index build 1m43s vs Run B 3m28s (smaller per-partition indexes) |
+| M2.5 | 13-Oct-26 | Verification | ~1 min | **all 24 months match; 30M rows = 30M unique ids; DEFAULT empty; sequence = max id** ✅ | 24 partitions × 358 MB |
+| M2.6 | 13-Oct-26 | Demo: routing + pruning | — | — | Insert now → y2026m10, +1 month → y2026m11, +1 year → **DEFAULT** (no partition yet). "Last 7 days": `Subplans Removed: 23`, 138 ms vs 86 ms on unpartitioned source with index → **pruning works, but no read-speed gain here**; benefit is per-month handling |
+| Run E | 13-Oct-26 | `pg_dump -Fd -j 4` of partitioned DB | **145 s** (Run A: 168 s) | 1.7 GB, 30 data files (~64 MB per month) | Work now splits into 30 tables, but only ≈14% faster on a laptop where 4 cores/1 disk are shared with both servers + gzip |
+
+## M2 conclusions
+
+1. Option C works end to end: small tables via pg_dump/pg_restore, log_activity streamed month by month into a partitioned table; **verified exactly** (per month, totals, unique ids, sequence).
+2. **Per-month resume is safe**: a cut is detected (`INCOMPLETE`), the re-run skips finished months and redoes only the broken one. Lost work per cut ≤ one month (vs whole table, or silent loss in D3).
+3. Speed: sequential month copy was ≈2× slower than pgcopydb's single stream in the lab. Fix: copy 2–4 months in parallel; measure in a rehearsal on Azure.
+4. Index build on partitions was faster (1m43s vs 3m28s).
+5. Partition pruning works, but a "last 7 days" query was not faster than the indexed unpartitioned table → the benefit is **operations** (per-month copy, archive, drop), not read speed.
+6. Partitions must be created **ahead of time**; otherwise rows land in DEFAULT (demo) → automate (pg_partman + pg_cron, M3).
+7. PG16 production: partitioned tables cannot use IDENTITY → sequence default + `setval` after copy.
 
 ## Screenshot checklist (for slides)
 - [ ] pgAdmin tree: `log_activity` BEFORE (one plain table)
@@ -55,3 +76,35 @@ Every step: script in `scripts/` or `sql/`, terminal output saved with `| Tee-Ob
 - [ ] EXPLAIN "last 7 days" before vs after (partition pruning)
 - [ ] Progress view during migration of the partitioned DB (several workers busy)
 - [ ] Verification output after resume test
+
+---
+
+# M3 — Automation (pg_partman + pg_cron) and data TTL (hot / cold / gone)
+
+Design: last **12 months hot** in the DB → older months **detached, exported to `.csv.gz`, checksummed, dropped** (cold) → files deleted after X years (gone; company + legal decide X). Evidence of every archive in `public.archive_log` (ISO 27001:2022 8.10 / 5.33).
+
+| Step | Date | What | Time | Verified | Key observation |
+|---|---|---|---|---|---|
+| M3.0 | 13-Oct-26 | Target rebuilt with `postgresql-16-partman` + `postgresql-16-cron` (`docker/target.Dockerfile`); flags `shared_preload_libraries=pg_cron`, `cron.database_name=appdb`, `cron.use_background_workers=on` | ~5 min | `SHOW shared_preload_libraries` = pg_cron; 30M rows kept ✅ | Rebuild keeps data (named volume) |
+| M3.1 | 13-Oct-26 | `m3_1_partman_setup.sql`: rename partitions to pg_partman naming, `create_parent('1 month', premake 3)`, retention `12 months`, keep table, schema `archive`; `archive_log` table; cron job `0 1 * * *` | <1 s | `create_parent = t`; 1 config row; cron job 1 ✅ | pg_partman finds partitions **by name** → M2's `_yYYYYmMM` names had to be renamed to `_pYYYYMMDD` |
+| M3.2 | 13-Oct-26 | `CALL partman.run_maintenance_proc()` by hand (what cron does nightly) | seconds | 17 hot partitions: 2025-10 → 2027-01 + DEFAULT ✅ | 11 months (2024-11 → 2025-09) detached into schema `archive`; future months 2026-11, 2026-12, 2027-01 pre-created (premake 3). Must run alone, not in a transaction block |
+| M3.3 | 13-Oct-26 | `m3_2_archive_detached.sh`: export → verify rows → sha256 → DROP + `archive_log` row in one transaction | 11 × 14–18 s ≈ 3 min | 11 × 1,250,000 rows; file rows = table rows ✅ | **358 MB partition → 66 MB csv.gz (≈5.4× smaller)**. Hot DB 4,655 MB (was ≈8.6 GB). Table rows 30M → **16.25M** (= 13 hot months × 1.25M) |
+| M3.4 | 13-Oct-26 | `m3_3_restore_month.sh log_activity_p20241101` | ~20 s | `checksum OK`; 1,250,000 rows = archive_log ✅ | Archived month provably unchanged and retrievable into schema `restored` (not the live table) |
+| M3.5 | 13-Oct-26 | Status + first cron test | — | archive_log 11 rows ✅; cron runs: **0** ⚠️ | Checked before the job fired / change not picked up yet |
+| M3.6 | 14-Oct-26 | Cron proof: `smoke-test` (`SELECT 1`) + `partman-maintenance` every minute for 3 min, then reset to `0 1 * * *` and unscheduled smoke-test | 3 min | 3 × 2 runs `succeeded`; log `cron job 1 starting: CALL partman.run_maintenance_proc()` ✅ | Automation runs unattended. Lab note: default pg_cron mode (connect to localhost) failed in the test container → `cron.use_background_workers=on` |
+
+## M3 conclusions
+
+1. **Automation works end to end**: pg_cron calls pg_partman nightly → new months are created ahead of time (no rows in DEFAULT) and months older than retention are detached automatically.
+2. **TTL = archive, not delete**: detached months are exported, row-verified, checksummed, logged and only then dropped — a failed check keeps the table.
+3. **Storage**: ≈5.4× smaller as csv.gz; hot DB roughly halved with 12-month retention on 24 months of data.
+4. **Retrieval proven** (checksum + row count) → supports ISO 27001:2022 5.33 Protection of records and an audit trail for PP 71/2019 / UU PDP requests.
+5. Retention period (N months hot, X years cold) is a **company + legal decision**; ISO 27001 sets no fixed period.
+6. Lessons: name partitions the way pg_partman expects from day one; `run_maintenance_proc()` must run on its own; enable pg_cron background workers (on Azure: managed — set `shared_preload_libraries`, `azure.extensions`, use `cron.schedule_in_database`).
+7. Production mapping: `/archive` folder → Azure Blob Storage (Cold/Archive tier, lifecycle delete after X years; immutable WORM if records must be tamper-proof — note lifecycle delete is blocked while a blob is immutable).
+
+## M3 screenshots
+- [x] pgAdmin schemas: archive, cron, partman, public, restored
+- [x] pgAdmin `log_activity` → Partitions (17), starting 2025-10
+- [x] archive folder: 11 `.csv.gz` files
+- [ ] cron proof output (job_run_details `succeeded`)

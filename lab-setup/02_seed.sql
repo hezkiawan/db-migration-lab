@@ -1,6 +1,6 @@
 -- db-migration-lab — M0 steps 4-5: fill the tables with fake data
 -- Run with psql. Size of the giant table is controlled by one variable:
---   psql ... -v rows_per_month=1250000 -f /sql/02_seed.sql
+--   psql ... -v rows_per_month=1250000 -f /lab/lab-setup/02_seed.sql
 -- 24 months x rows_per_month rows go into log_activity.
 -- Default 1,250,000/month = 30M rows ≈ 7-8 GB (about 1/10 of the real 80 GB DB).
 

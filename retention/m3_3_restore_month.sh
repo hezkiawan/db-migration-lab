@@ -1,6 +1,6 @@
 #!/bin/sh
 # M3.3: prove an archived month is still retrievable (ISO 27001 5.33).
-# Usage: sh /scripts/m3_3_restore_month.sh log_activity_p20241101 -> USER CHOOSE PARTITION
+# Usage: sh /lab/retention/m3_3_restore_month.sh log_activity_p20241101 -> USER CHOOSE PARTITION
 #   1. checksum of the file must match archive_log (file not altered)
 #   2. load it into schema "restored" (NOT back into the live table)
 #   3. row count must match archive_log

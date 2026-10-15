@@ -3,7 +3,7 @@
 # only 2 copy workers so parts finish one after another. We will cut it mid-way.
 exists=$(psql -h target -U postgres -d postgres -tAc "SELECT 1 FROM pg_database WHERE datname = 'appdb'")
 if [ "$exists" = "1" ]; then
-  echo "STOP: appdb already exists on target. Run: docker exec lab-tools sh /scripts/reset_target.sh"
+  echo "STOP: appdb already exists on target. Run: docker exec lab-tools sh /lab/lab-setup/reset_target.sh"
   exit 1
 fi
 psql -h target -U postgres -d postgres -c "CREATE DATABASE appdb;"

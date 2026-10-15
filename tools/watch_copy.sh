@@ -1,6 +1,6 @@
 #!/bin/sh
 # Show every COPY currently running on a server, refreshed every 10 s. Stop with Ctrl+C.
-# Usage: sh /scripts/watch_copy.sh [source|target]   (default: source)
+# Usage: sh /lab/tools/watch_copy.sh [source|target]   (default: source)
 HOST="${1:-source}"
 while true; do
   date +%T
