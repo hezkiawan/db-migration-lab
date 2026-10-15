@@ -1,0 +1,10 @@
+# generated data — never commit
+archive/*
+!archive/.gitkeep
+*.csv.gz
+*.zip
+
+# OS / editor noise
+.DS_Store
+Thumbs.db
+.vscode/``

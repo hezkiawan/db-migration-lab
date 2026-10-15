@@ -1,0 +1,22 @@
+{
+  "Servers": {
+    "1": {
+      "Name": "lab-source (old server)",
+      "Group": "DB migration lab",
+      "Host": "source",
+      "Port": 5432,
+      "MaintenanceDB": "appdb",
+      "Username": "postgres",
+      "SSLMode": "prefer"
+    },
+    "2": {
+      "Name": "lab-target (new server)",
+      "Group": "DB migration lab",
+      "Host": "target",
+      "Port": 5432,
+      "MaintenanceDB": "postgres",
+      "Username": "postgres",
+      "SSLMode": "prefer"
+    }
+  }
+}

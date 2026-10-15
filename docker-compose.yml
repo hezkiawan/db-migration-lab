@@ -1,0 +1,90 @@
+# db-migration-lab — M0
+# Simulates: old Azure server (source) -> migration VM (tools) -> new Azure server (target)
+# LAB ONLY: passwords are hard-coded on purpose. Never do this for real servers.
+
+services:
+  source:                         # "Tenant A" server: holds the data we want to move
+    image: postgres:16            # major 16 = same as the pg_dump inside the tools image
+    container_name: lab-source
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: appdb          # database created on first start
+    ports:
+      - "5433:5432"               # your PC port 5433 -> container port 5432
+    shm_size: 1g                  # shared memory for parallel workers (Docker's default is small)
+    volumes:
+      - source_data:/var/lib/postgresql/data   # keeps data when the container restarts
+    healthcheck:                  # "is Postgres ready to accept connections?"
+      test: ["CMD-SHELL", "pg_isready -U postgres -d appdb"]
+      interval: 5s
+      retries: 10
+
+  target:                         # "Tenant B" server: empty, receives the migration in M1
+    build:                        # M3: postgres:16 + pg_partman + pg_cron (docker/target.Dockerfile)
+      context: ./docker
+      dockerfile: target.Dockerfile
+    image: lab-target-pg16-partman
+    command:                      # same idea as Azure "Server parameters" (shared_preload_libraries needs a restart)
+      - postgres
+      - -c
+      - shared_preload_libraries=pg_cron
+      - -c
+      - cron.database_name=appdb          # pg_cron keeps its job table in appdb
+      - -c
+      - cron.use_background_workers=on    # run jobs without opening client connections
+      - -c
+      - timezone=UTC
+    container_name: lab-target
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5434:5432"
+    shm_size: 1g
+    volumes:
+      - target_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      retries: 10
+
+  tools:                          # the "migration VM": pgcopydb + pg_dump/pg_restore live here
+    image: ghcr.io/dimitri/pgcopydb:latest
+    container_name: lab-tools
+    user: root                    # LAB ONLY: lets tools write to the /dumps volume (the image's default user can't)
+    entrypoint: ["sleep", "infinity"]   # just stay alive; we run commands inside it with `docker exec`
+    environment:
+      # pgcopydb reads these two variables (documented in its intro page)
+      PGCOPYDB_SOURCE_PGURI: postgres://postgres:postgres@source:5432/appdb
+      PGCOPYDB_TARGET_PGURI: postgres://postgres:postgres@target:5432/appdb
+      PGPASSWORD: postgres        # so pg_dump / psql don't prompt for a password
+    volumes:
+      - dumps:/dumps              # where pg_dump writes its directory-format output in M1
+      - ./scripts:/scripts:ro     # our M1 scripts, read-only (avoids PowerShell quoting problems)
+      - ./sql:/sql:ro             # our SQL files, so the tools container can run them against source OR target
+      - ./archive:/archive        # M3: archived months land in the archive folder on your PC (stands in for Azure Blob Storage)
+    depends_on:
+      source:
+        condition: service_healthy
+      target:
+        condition: service_healthy
+
+  pgadmin:                        # web "table viewer" for both servers: http://localhost:5050
+    image: dpage/pgadmin4:latest
+    container_name: lab-pgadmin
+    environment:
+      PGADMIN_DEFAULT_EMAIL: admin@example.com    # LAB ONLY login for the pgAdmin web page
+      PGADMIN_DEFAULT_PASSWORD: admin
+    ports:
+      - "5050:80"                 # container listens on 80 (pgAdmin docs)
+    volumes:
+      - ./pgadmin/servers.json:/pgadmin4/servers.json:ro   # pre-registers source + target (first launch only)
+    depends_on:
+      - source
+      - target
+
+volumes:                          # named volumes live inside Docker's disk image (move it to D: first!)
+  source_data:
+  target_data:
+  dumps:
